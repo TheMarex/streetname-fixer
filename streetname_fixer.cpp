@@ -25,6 +25,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 */
 
+#include <boost/filesystem/path.hpp>
+#include <boost/filesystem.hpp>
 #include <unordered_map>
 #include <fstream>
 
@@ -277,14 +279,14 @@ void parseInput(const char* path,
     std::cout << "Number of parsed ways: " << parsed_ways->size() << std::endl;
 }
 
-void writeOutput(const std::vector<MissingNameError>& errors, const StringTableT& string_table, const char* path)
+void writeOutput(const std::vector<MissingNameError>& errors, const StringTableT& string_table, const std::string& path)
 {
-    std::ofstream output(path);
+    std::ofstream output("nonames_" + path);
 
-    output << "prev_way_id,enclosed_way_id,next_way_id,name,name_id" << std::endl;
+    output << "prev_way_id,enclosed_way_id,next_way_id,name" << std::endl;
     for (const auto& e : errors)
     {
-        output << e.startWay << "," << e.enclosedWay << "," << e.endWay << "," << string_table[e.name_id] << "," << e.name_id << std::endl;
+        output << e.startWay << "," << e.enclosedWay << "," << e.endWay << "," << string_table[e.name_id] << std::endl;
     }
 }
 
@@ -297,6 +299,14 @@ int main (int argc, char *argv[])
     }
 
     char* input_file_path = argv[1];
+    boost::filesystem::path input_path(input_file_path);
+    if (!boost::filesystem::exists(input_path))
+    {
+        std::cout << "Error: Input file " << input_file_path << " does not exists." << std::endl;
+    }
+
+    boost::filesystem::path output_path = input_path.filename().replace_extension(".csv");
+
     std::unique_ptr<EndpointWayMapT> endpoint_way_map;
     std::unique_ptr<ParsedWayVectorT> parsed_ways;
     std::unique_ptr<StringTableT> string_table;
@@ -305,7 +315,7 @@ int main (int argc, char *argv[])
     MissingNameDetector detector(*endpoint_way_map, *parsed_ways);
     std::vector<MissingNameError> errors = detector();
 
-    writeOutput(errors, *string_table, "nonames.csv");
+    writeOutput(errors, *string_table, output_path.string());
 
     std::cout << "Number of errors: " << errors.size() << std::endl;
 
