@@ -26,6 +26,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 #include <unordered_map>
+#include <fstream>
 
 #include <osmium/io/pbf_input.hpp>
 #include <osmium/tags/filter.hpp>
@@ -67,9 +68,14 @@ public:
     : endpoint_way_map(new EndpointWayMapT())
     , parsed_ways(new ParsedWayVectorT())
     , string_table(new StringTableT())
+    , noncar_filer(true)
     {
         highway_filter.add(true, "highway");
-        getStringID("0");
+        noncar_filer.add(false, "highway", "footway");
+        noncar_filer.add(false, "highway", "cycleway");
+        noncar_filer.add(false, "highway", "steps");
+        noncar_filer.add(false, "highway", "path");
+        getStringID("");
     }
 
     void operator()(const osmium::memory::Buffer& buffer)
@@ -103,6 +109,11 @@ private:
     {
         const auto& tags = way.tags();
         auto it = std::find_if(tags.begin(), tags.end(), highway_filter);
+        if (it == tags.end())
+        {
+            return;
+        }
+        it = std::find_if(tags.begin(), tags.end(), noncar_filer);
         if (it == tags.end())
         {
             return;
@@ -142,6 +153,7 @@ private:
     }
 
     osmium::tags::KeyFilter highway_filter;
+    osmium::tags::KeyValueFilter noncar_filer;
 
     std::unique_ptr<EndpointWayMapT> endpoint_way_map;
     std::unique_ptr<ParsedWayVectorT> parsed_ways;
@@ -156,11 +168,11 @@ struct MissingNameError
     MissingNameError(osmium::object_id_type startWay,
                      osmium::object_id_type enclosedWay,
                      osmium::object_id_type endWay,
-                     const char* name)
+                     unsigned name_id)
     : startWay(startWay)
     , enclosedWay(enclosedWay)
     , endWay(endWay)
-    , name(name)
+    , name_id(name_id)
     {
     }
 
@@ -168,24 +180,23 @@ struct MissingNameError
     osmium::object_id_type enclosedWay;
     osmium::object_id_type endWay;
 
-    const char* name;
+    unsigned name_id;
 };
 
 class MissingNameDetector
 {
 public:
     MissingNameDetector(const EndpointWayMapT& endpoint_way_map,
-                        const ParsedWayVectorT& parsed_ways,
-                        const StringTableT& string_table)
+                        const ParsedWayVectorT& parsed_ways)
     : endpoint_way_map(endpoint_way_map)
     , parsed_ways(parsed_ways)
-    , string_table(string_table)
     {
     }
 
     std::vector<MissingNameError> operator()() const
     {
         std::vector<MissingNameError> errors;
+        unsigned no_names = 0;
         for (const auto& way : parsed_ways)
         {
             // skip named streets
@@ -193,6 +204,8 @@ public:
             {
                 continue;
             }
+
+            no_names++;
 
             const auto beforeWayRange = endpoint_way_map.get_all(way.firstNodeId);
             const auto afterWayRange = endpoint_way_map.get_all(way.lastNodeId);
@@ -205,20 +218,39 @@ public:
                     const auto& afterWay = parsed_ways[afterIt->second];
 
                     // Found enclosing ways with same name
-                    if (beforeWay.nameId == afterWay.nameId)
+                    if (beforeWay.nameId != NO_NAME_ID && beforeWay.nameId == afterWay.nameId)
                     {
-                        errors.emplace_back(beforeWay.id, way.id, afterWay.id, string_table[beforeWay.nameId].c_str());
+                        errors.emplace_back(beforeWay.id, way.id, afterWay.id, beforeWay.nameId);
                     }
                 }
             }
         }
 
-        return errors;
+        std::sort(errors.begin(), errors.end(),
+                  [](const MissingNameError& e1, const MissingNameError& e2)
+                  {
+                    return e1.enclosedWay < e2.enclosedWay;
+                  }
+        );
+
+        std::vector<MissingNameError> unique_errors;
+        unique_errors.reserve(errors.size());
+
+        // Remove errors for the same enclosed way that suggest the same name
+        std::unique_copy(errors.begin(), errors.end(), std::back_inserter(unique_errors),
+                  [](const MissingNameError& e1, const MissingNameError& e2)
+                  {
+                    return (e1.enclosedWay == e2.enclosedWay) && (e1.name_id == e2.name_id);
+                  }
+        );
+
+        std::cout << "Number of ways without name: " << no_names << std::endl;
+
+        return unique_errors;
     }
 
     const EndpointWayMapT& endpoint_way_map;
     const ParsedWayVectorT& parsed_ways;
-    const StringTableT& string_table;
 };
 
 void parseInput(const char* path,
@@ -229,16 +261,31 @@ void parseInput(const char* path,
     osmium::io::File input(path);
     osmium::io::Reader reader(input, osmium::osm_entity_bits::way);
 
+    std::cout << "Parsing... " << std::flush;
     BufferParser parser;
     while (osmium::memory::Buffer buffer = reader.read()) {
         parser(buffer);
     }
+    std::cout << " ok." << std::endl;
 
     endpoint_way_map = std::move(parser.getEndpointWayMap());
     // after the insersion finished we need to build the index
     endpoint_way_map->consolidate();
     parsed_ways = std::move(parser.getParsedWays());
     string_table = std::move(parser.getStringTable());
+
+    std::cout << "Number of parsed ways: " << parsed_ways->size() << std::endl;
+}
+
+void writeOutput(const std::vector<MissingNameError>& errors, const StringTableT& string_table, const char* path)
+{
+    std::ofstream output(path);
+
+    output << "prev_way_id,enclosed_way_id,next_way_id,name,name_id" << std::endl;
+    for (const auto& e : errors)
+    {
+        output << e.startWay << "," << e.enclosedWay << "," << e.endWay << "," << string_table[e.name_id] << "," << e.name_id << std::endl;
+    }
 }
 
 int main (int argc, char *argv[])
@@ -255,8 +302,10 @@ int main (int argc, char *argv[])
     std::unique_ptr<StringTableT> string_table;
     parseInput(input_file_path, endpoint_way_map, parsed_ways, string_table);
 
-    MissingNameDetector detector(*endpoint_way_map, *parsed_ways, *string_table);
+    MissingNameDetector detector(*endpoint_way_map, *parsed_ways);
     std::vector<MissingNameError> errors = detector();
+
+    writeOutput(errors, *string_table, "nonames.csv");
 
     std::cout << "Number of errors: " << errors.size() << std::endl;
 
