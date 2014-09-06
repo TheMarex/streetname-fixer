@@ -65,16 +65,22 @@ class BufferParser
 {
 public:
     BufferParser()
-    : noncar_filer(true)
-    , endpoint_way_map(new EndpointWayMapT())
+    : endpoint_way_map(new EndpointWayMapT())
     , parsed_ways(new ParsedWayVectorT())
     , string_table(new StringTableT())
     {
-        highway_filter.add(true, "highway");
-        noncar_filer.add(false, "highway", "footway");
-        noncar_filer.add(false, "highway", "cycleway");
-        noncar_filer.add(false, "highway", "steps");
-        noncar_filer.add(false, "highway", "path");
+        highway_filter.add(true, "highway", "trunk");
+        highway_filter.add(true, "highway", "motorway");
+        highway_filter.add(true, "highway", "primary");
+        highway_filter.add(true, "highway", "secondary");
+        highway_filter.add(true, "highway", "tertiary");
+        highway_filter.add(true, "highway", "trunk_link");
+        highway_filter.add(true, "highway", "motorway_link");
+        highway_filter.add(true, "highway", "primary_link");
+        highway_filter.add(true, "highway", "secondary_link");
+        highway_filter.add(true, "highway", "tertiary_link");
+        highway_filter.add(true, "highway", "residential");
+        highway_filter.add(true, "highway", "service");
         getStringID("");
     }
 
@@ -113,11 +119,6 @@ private:
         {
             return;
         }
-        it = std::find_if(tags.begin(), tags.end(), noncar_filer);
-        if (it == tags.end())
-        {
-            return;
-        }
 
         const char* name = tags.get_value_by_key("name", "");
         const char* ref = tags.get_value_by_key("ref", "");
@@ -152,8 +153,7 @@ private:
         return it->second;
     }
 
-    osmium::tags::KeyFilter highway_filter;
-    osmium::tags::KeyValueFilter noncar_filer;
+    osmium::tags::KeyValueFilter highway_filter;
 
     std::unique_ptr<EndpointWayMapT> endpoint_way_map;
     std::unique_ptr<ParsedWayVectorT> parsed_ways;
