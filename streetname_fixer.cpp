@@ -37,24 +37,24 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 struct ParsedWay
 {
     ParsedWay(osmium::object_id_type id,
-              unsigned long firstNodeId,
-              unsigned long lastNodeId,
-              unsigned nameId,
-              unsigned refID)
+              unsigned long first_node_id,
+              unsigned long last_node_id,
+              unsigned name_id,
+              unsigned ref_id)
     : id(id)
-    , firstNodeId(firstNodeId)
-    , lastNodeId(lastNodeId)
-    , nameId(nameId)
-    , refID(refID)
+    , first_node_id(first_node_id)
+    , last_node_id(last_node_id)
+    , name_id(name_id)
+    , ref_id(ref_id)
     {
     }
 
     osmium::object_id_type id;
-    osmium::object_id_type firstNodeId;
-    osmium::object_id_type lastNodeId;
+    osmium::object_id_type first_node_id;
+    osmium::object_id_type last_node_id;
 
-    unsigned nameId;
-    unsigned refID;
+    unsigned name_id;
+    unsigned ref_id;
 };
 
 using EndpointWayMapT = osmium::index::multimap::VectorBasedSparseMultimap<unsigned long, unsigned, std::vector>;
@@ -167,22 +167,25 @@ private:
 
 struct MissingNameError
 {
-    MissingNameError(osmium::object_id_type startWay,
-                     osmium::object_id_type enclosedWay,
-                     osmium::object_id_type endWay,
-                     unsigned name_id)
-    : startWay(startWay)
-    , enclosedWay(enclosedWay)
-    , endWay(endWay)
+    MissingNameError(osmium::object_id_type src_before_way,
+                     osmium::object_id_type incomplete_way,
+                     osmium::object_id_type src_after_way,
+                     unsigned name_id,
+                     unsigned ref_id)
+    : src_before_way(src_before_way)
+    , incomplete_way(incomplete_way)
+    , src_after_way(src_after_way)
     , name_id(name_id)
+    , ref_id(ref_id)
     {
     }
 
-    osmium::object_id_type startWay;
-    osmium::object_id_type enclosedWay;
-    osmium::object_id_type endWay;
+    osmium::object_id_type src_before_way;
+    osmium::object_id_type incomplete_way;
+    osmium::object_id_type src_after_way;
 
     unsigned name_id;
+    unsigned ref_id;
 };
 
 class MissingNameDetector
@@ -202,28 +205,73 @@ public:
         for (const auto& way : parsed_ways)
         {
             // skip named streets
-            if (way.nameId != NO_NAME_ID)
+            if (way.name_id != NO_NAME_ID && way.ref_id != NO_NAME_ID)
             {
                 continue;
             }
 
             no_names++;
 
-            const auto beforeWayRange = endpoint_way_map.get_all(way.firstNodeId);
-            const auto afterWayRange = endpoint_way_map.get_all(way.lastNodeId);
+            const auto before_way_range = endpoint_way_map.get_all(way.first_node_id);
+            const auto after_way_range = endpoint_way_map.get_all(way.last_node_id);
 
-            for (auto beforeIt = beforeWayRange.first; beforeIt != beforeWayRange.second; beforeIt++)
+            for (auto beforeIt = before_way_range.first; beforeIt != before_way_range.second; beforeIt++)
             {
-                const auto& beforeWay = parsed_ways[beforeIt->second];
-                for (auto afterIt = afterWayRange.first; afterIt != afterWayRange.second; afterIt++)
+                const auto& before_way = parsed_ways[beforeIt->second];
+                if (before_way.id == way.id
+                || (before_way.name_id == NO_NAME_ID && before_way.ref_id == NO_NAME_ID))
                 {
-                    const auto& afterWay = parsed_ways[afterIt->second];
+                    continue;
+                }
+
+                unsigned infered_name_id = way.name_id;
+                unsigned infered_ref_id = way.ref_id;
+                osmium::object_id_type after_way_id;
+                bool infered_tag = false;
+
+                for (auto afterIt = after_way_range.first; afterIt != after_way_range.second; afterIt++)
+                {
+                    const auto& after_way = parsed_ways[afterIt->second];
+                    if (after_way.id == way.id
+                    || (after_way.name_id == NO_NAME_ID && after_way.ref_id == NO_NAME_ID))
+                    {
+                        continue;
+                    }
 
                     // Found enclosing ways with same name
-                    if (beforeWay.nameId != NO_NAME_ID && beforeWay.nameId == afterWay.nameId)
+                    if (infered_name_id == NO_NAME_ID
+                     && before_way.name_id != NO_NAME_ID
+                     && before_way.name_id == after_way.name_id)
                     {
-                        errors.emplace_back(beforeWay.id, way.id, afterWay.id, beforeWay.nameId);
+                        infered_name_id = before_way.name_id;
+                        after_way_id = after_way.id;
+                        infered_tag = true;
                     }
+
+                    // Found enclosing ways with same ref
+                    if (infered_ref_id == NO_NAME_ID
+                     && before_way.ref_id != NO_NAME_ID
+                     && before_way.ref_id == after_way.ref_id)
+                    {
+                        infered_ref_id = before_way.ref_id;
+                        after_way_id = after_way.id;
+                        infered_tag = true;
+                    }
+
+                    // break if we could complete all tags
+                    if (infered_name_id != NO_NAME_ID && infered_ref_id != NO_NAME_ID)
+                    {
+                        break;
+                    }
+                }
+
+                if (infered_tag)
+                {
+                    errors.emplace_back(before_way.id,
+                                        way.id,
+                                        after_way_id,
+                                        infered_name_id,
+                                        infered_ref_id);
                 }
             }
         }
@@ -231,7 +279,7 @@ public:
         std::sort(errors.begin(), errors.end(),
                   [](const MissingNameError& e1, const MissingNameError& e2)
                   {
-                    return e1.enclosedWay < e2.enclosedWay;
+                    return e1.incomplete_way < e2.incomplete_way;
                   }
         );
 
@@ -242,7 +290,7 @@ public:
         std::unique_copy(errors.begin(), errors.end(), std::back_inserter(unique_errors),
                   [](const MissingNameError& e1, const MissingNameError& e2)
                   {
-                    return (e1.enclosedWay == e2.enclosedWay) && (e1.name_id == e2.name_id);
+                    return (e1.incomplete_way == e2.incomplete_way) && (e1.name_id == e2.name_id);
                   }
         );
 
@@ -250,6 +298,7 @@ public:
 
         return unique_errors;
     }
+private:
 
     const EndpointWayMapT& endpoint_way_map;
     const ParsedWayVectorT& parsed_ways;
@@ -258,7 +307,7 @@ public:
 void parseInput(const char* path,
                 std::unique_ptr<EndpointWayMapT>& endpoint_way_map,
                 std::unique_ptr<ParsedWayVectorT>& parsed_ways,
-                std::unique_ptr<StringTableT>& string_table )
+                std::unique_ptr<StringTableT>& string_table)
 {
     osmium::io::File input(path);
     osmium::io::Reader reader(input, osmium::osm_entity_bits::way);
@@ -281,12 +330,16 @@ void parseInput(const char* path,
 
 void writeOutput(const std::vector<MissingNameError>& errors, const StringTableT& string_table, const std::string& path)
 {
-    std::ofstream output("nonames_" + path);
+    std::ofstream output("missing_name_ref_" + path);
 
-    output << "prev_way_id,enclosed_way_id,next_way_id,name" << std::endl;
+    output << "incomplete_way_id,src_before_way_id,src_after_way_id,name,ref" << std::endl;
     for (const auto& e : errors)
     {
-        output << e.startWay << "," << e.enclosedWay << "," << e.endWay << "," << string_table[e.name_id] << std::endl;
+        output << e.incomplete_way << ","
+               << e.src_before_way << ","
+               << e.src_after_way << ","
+               << string_table[e.name_id] << ","
+               << string_table[e.ref_id] << std::endl;
     }
 }
 
