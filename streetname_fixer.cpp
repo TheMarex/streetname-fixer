@@ -65,10 +65,10 @@ class BufferParser
 {
 public:
     BufferParser()
-    : endpoint_way_map(new EndpointWayMapT())
+    : noncar_filer(true)
+    , endpoint_way_map(new EndpointWayMapT())
     , parsed_ways(new ParsedWayVectorT())
     , string_table(new StringTableT())
-    , noncar_filer(true)
     {
         highway_filter.add(true, "highway");
         noncar_filer.add(false, "highway", "footway");
