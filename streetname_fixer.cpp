@@ -122,14 +122,21 @@ private:
             return;
         }
 
+        const osmium::NodeRef& first = way.nodes().front();
+        const osmium::NodeRef& last = way.nodes().back();
+
+        // filter out closed ways, generally this will just cause false
+        // positives with round-a-abouts
+        if (first == last)
+        {
+            return;
+        }
+
         const char* name = tags.get_value_by_key("name", "");
         const char* ref = tags.get_value_by_key("ref", "");
 
         unsigned name_id = getStringID(name);
         unsigned ref_id = getStringID(ref);
-
-        const osmium::NodeRef& first = way.nodes().front();
-        const osmium::NodeRef& last = way.nodes().back();
 
         // we can't use osmium ids because MultiMap expects unsigned keys
         unsigned long firstID = static_cast<unsigned long>(first.ref());
