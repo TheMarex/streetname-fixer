@@ -20,7 +20,7 @@ This will typically match small segments at junctions or added motorway segments
 	make -j
 	./streetname-fixer input.osm.pbf
 
-This will create a file "missing_name_ref_input.osm.csv" with the following columns:
+This will create two files "inconsitent_name.input.osm.csv" and "inconsitent_ref.input.osm.csv" with the following columns:
 
 ```incomplete_way_id```: OSM id of the way that has incomplete tags
 
@@ -28,9 +28,8 @@ This will create a file "missing_name_ref_input.osm.csv" with the following colu
 
 ```src_after_way_id```: way that connects to the last node of the incomplete way
 
-The ```src_*_way_id``` can be used to show context to the mapper, the below tags are infered from their name + ref tags.
+The ```src_*_way_id``` can be used to show context to the mapper, the below tag is infered from their name + ref tags.
 
-```name```: suggestion for name tag
+```tag_suggestion```: suggestion for name or ref tag respectively
 
-```ref```: suggestion for ref tag
 
