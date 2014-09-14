@@ -61,7 +61,7 @@ using EndpointWayMapT = osmium::index::multimap::VectorBasedSparseMultimap<unsig
 using StringTableT = std::vector<std::string>;
 using ParsedWayVectorT = std::vector<ParsedWay>;
 
-constexpr unsigned NO_NAME_ID = 0;
+constexpr unsigned NO_VALUE_ID = 0;
 
 class BufferParser
 {
@@ -172,141 +172,143 @@ private:
 };
 
 
-struct MissingNameError
+struct ConsistencyError
 {
-    MissingNameError(osmium::object_id_type src_before_way,
+    /*
+    ConsistencyError() = default;
+    ConsistencyError(const ConsistencyError&& other)
+    {
+        src_before_way = other.src_before_way;
+        incomplete_way = other.incomplete_way;
+        src_after_way = other.src_after_way;
+    }
+    ConsistencyError& operator=(const ConsistencyError&& other)
+    {
+        src_before_way = other.src_before_way;
+        incomplete_way = other.incomplete_way;
+        src_after_way = other.src_after_way;
+    }
+
+    ConsistencyError(osmium::object_id_type src_before_way,
                      osmium::object_id_type incomplete_way,
                      osmium::object_id_type src_after_way,
-                     unsigned name_id,
-                     unsigned ref_id)
+                     unsigned string_id)
     : src_before_way(src_before_way)
     , incomplete_way(incomplete_way)
     , src_after_way(src_after_way)
-    , name_id(name_id)
-    , ref_id(ref_id)
+    , string_id(string_id)
     {
     }
+    */
 
     osmium::object_id_type src_before_way;
     osmium::object_id_type incomplete_way;
     osmium::object_id_type src_after_way;
 
-    unsigned name_id;
-    unsigned ref_id;
+    unsigned string_id;
+    unsigned buf;
 };
 
-class MissingNameDetector
+template<typename ValueGetterT>
+class MissingValueDetector
 {
 public:
-    MissingNameDetector(const EndpointWayMapT& endpoint_way_map,
-                        const ParsedWayVectorT& parsed_ways)
-    : endpoint_way_map(endpoint_way_map)
+    MissingValueDetector(const EndpointWayMapT& endpoint_way_map,
+                         const ParsedWayVectorT& parsed_ways,
+                         ValueGetterT getValue)
+    : getValue(getValue)
+    , endpoint_way_map(endpoint_way_map)
     , parsed_ways(parsed_ways)
     {
     }
 
-    std::vector<MissingNameError> operator()() const
+    std::vector<ConsistencyError> operator()() const
     {
-        std::vector<MissingNameError> errors;
-        unsigned no_names = 0;
+        std::vector<ConsistencyError> errors;
+        errors.reserve(100);
+
+        unsigned added = 0;
         for (const auto& way : parsed_ways)
         {
             // skip named streets
-            if (way.name_id != NO_NAME_ID && way.ref_id != NO_NAME_ID)
+            if (getValue(way) != NO_VALUE_ID)
             {
                 continue;
             }
 
-            no_names++;
-
             const auto before_way_range = endpoint_way_map.get_all(way.first_node_id);
             const auto after_way_range = endpoint_way_map.get_all(way.last_node_id);
 
+            // check each pair of streets that connects to the first endpoint
+            // and the second endpoint
             for (auto beforeIt = before_way_range.first; beforeIt != before_way_range.second; beforeIt++)
             {
                 const auto& before_way = parsed_ways[beforeIt->second];
-                if (before_way.id == way.id
-                || (before_way.name_id == NO_NAME_ID && before_way.ref_id == NO_NAME_ID))
+                if (before_way.id == way.id || getValue(before_way) == NO_VALUE_ID)
                 {
                     continue;
                 }
 
-                unsigned infered_name_id = way.name_id;
-                unsigned infered_ref_id = way.ref_id;
+                unsigned infered_value_id = NO_VALUE_ID;
                 osmium::object_id_type after_way_id;
-                bool infered_tag = false;
 
                 for (auto afterIt = after_way_range.first; afterIt != after_way_range.second; afterIt++)
                 {
                     const auto& after_way = parsed_ways[afterIt->second];
                     if (after_way.id == way.id
-                    || (after_way.name_id == NO_NAME_ID && after_way.ref_id == NO_NAME_ID))
+                    // we don't want "loops"
+                    || after_way.id == before_way.id
+                    || getValue(after_way) == NO_VALUE_ID)
                     {
                         continue;
                     }
 
-                    // Found enclosing ways with same name
-                    if (infered_name_id == NO_NAME_ID
-                     && before_way.name_id != NO_NAME_ID
-                     && before_way.name_id == after_way.name_id)
+                    // Found enclosing ways with same value
+                    if (infered_value_id == NO_VALUE_ID
+                     && getValue(before_way) == getValue(after_way))
                     {
-                        infered_name_id = before_way.name_id;
+                        infered_value_id = getValue(before_way);
                         after_way_id = after_way.id;
-                        infered_tag = true;
-                    }
-
-                    // Found enclosing ways with same ref
-                    if (infered_ref_id == NO_NAME_ID
-                     && before_way.ref_id != NO_NAME_ID
-                     && before_way.ref_id == after_way.ref_id)
-                    {
-                        infered_ref_id = before_way.ref_id;
-                        after_way_id = after_way.id;
-                        infered_tag = true;
-                    }
-
-                    // break if we could complete all tags
-                    if (infered_name_id != NO_NAME_ID && infered_ref_id != NO_NAME_ID)
-                    {
                         break;
                     }
                 }
 
-                if (infered_tag)
+                if (infered_value_id != NO_VALUE_ID)
                 {
-                    errors.emplace_back(before_way.id,
+                    added++;
+                    errors.push_back(ConsistencyError {before_way.id,
                                         way.id,
                                         after_way_id,
-                                        infered_name_id,
-                                        infered_ref_id);
+                                        infered_value_id});
                 }
             }
         }
 
         std::sort(errors.begin(), errors.end(),
-                  [](const MissingNameError& e1, const MissingNameError& e2)
+                  [](const ConsistencyError& e1, const ConsistencyError& e2) -> bool
                   {
-                    return e1.incomplete_way < e2.incomplete_way;
+                      return (e1.incomplete_way <  e2.incomplete_way)
+                          || (e1.incomplete_way == e2.incomplete_way && e1.string_id < e2.string_id);
                   }
         );
 
-        std::vector<MissingNameError> unique_errors;
+        std::vector<ConsistencyError> unique_errors;
         unique_errors.reserve(errors.size());
 
-        // Remove errors for the same enclosed way that suggest the same name
+        std::cout << "Make unique... " << std::flush;
+        // Remove errors for the same enclosed way that suggest the same value
         std::unique_copy(errors.begin(), errors.end(), std::back_inserter(unique_errors),
-                  [](const MissingNameError& e1, const MissingNameError& e2)
+                  [](const ConsistencyError& e1, const ConsistencyError& e2)
                   {
-                    return (e1.incomplete_way == e2.incomplete_way) && (e1.name_id == e2.name_id);
+                      return (e1.incomplete_way == e2.incomplete_way) && (e1.string_id == e2.string_id);
                   }
         );
-
-        std::cout << "Number of ways without name: " << no_names << std::endl;
+        std::cout << " ok." << std::endl;
 
         return unique_errors;
     }
 private:
-
+    ValueGetterT getValue;
     const EndpointWayMapT& endpoint_way_map;
     const ParsedWayVectorT& parsed_ways;
 };
@@ -328,26 +330,34 @@ void parseInput(const char* path,
 
     endpoint_way_map = std::move(parser.getEndpointWayMap());
     // after the insersion finished we need to build the index
+    std::cout << "Building endpoint index... " << std::flush;
     endpoint_way_map->consolidate();
+    std::cout << " ok." << std::endl;
     parsed_ways = std::move(parser.getParsedWays());
     string_table = std::move(parser.getStringTable());
 
     std::cout << "Number of parsed ways: " << parsed_ways->size() << std::endl;
 }
 
-void writeOutput(const std::vector<MissingNameError>& errors, const StringTableT& string_table, const std::string& path)
+void writeOutput(const std::vector<ConsistencyError>& errors,
+                 const StringTableT& string_table,
+                 const std::string& tag_name,
+                 const std::string& path)
 {
-    std::ofstream output("missing_name_ref_" + path);
+    std::string complete_path = "missing_" + tag_name + "_" + path;
+    std::cout << "Writing " << complete_path << " .... " << std::flush;
+    std::ofstream output(complete_path);
 
-    output << "incomplete_way_id,src_before_way_id,src_after_way_id,name,ref" << std::endl;
+    output << "incomplete_way_id,src_before_way_id,src_after_way_id,tag_suggestion" << std::endl;
     for (const auto& e : errors)
     {
         output << e.incomplete_way << ","
                << e.src_before_way << ","
                << e.src_after_way << ","
-               << string_table[e.name_id] << ","
-               << string_table[e.ref_id] << std::endl;
+               << string_table[e.string_id] << std::endl;
     }
+
+    std::cout << " ok." << std::endl;
 }
 
 int main (int argc, char *argv[])
@@ -372,12 +382,22 @@ int main (int argc, char *argv[])
     std::unique_ptr<StringTableT> string_table;
     parseInput(input_file_path, endpoint_way_map, parsed_ways, string_table);
 
-    MissingNameDetector detector(*endpoint_way_map, *parsed_ways);
-    std::vector<MissingNameError> errors = detector();
+    auto name_getter = [](const ParsedWay& w) { return w.name_id; };
+    auto ref_getter  = [](const ParsedWay& w) { return w.ref_id; };
 
-    writeOutput(errors, *string_table, output_path.string());
+    // Yes, just using inheritence would be possible, but we don't want virtual functions.
+    // the lambdas will get inline.
+    MissingValueDetector<decltype(name_getter)> name_detector(*endpoint_way_map, *parsed_ways, name_getter);
+    MissingValueDetector<decltype(ref_getter)>  ref_detector(*endpoint_way_map, *parsed_ways, ref_getter);
 
-    std::cout << "Number of errors: " << errors.size() << std::endl;
+    std::vector<ConsistencyError> name_errors = name_detector();
+    std::cout << "Number of name errors: " << name_errors.size() << std::endl;
+    writeOutput(name_errors, *string_table, "name", output_path.string());
+
+    std::vector<ConsistencyError> ref_errors = ref_detector();
+    std::cout << "Number of refs errors: " << ref_errors.size() << std::endl;
+    writeOutput(ref_errors, *string_table, "ref", output_path.string());
+
 
     return 0;
 }
