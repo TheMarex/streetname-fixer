@@ -344,7 +344,7 @@ void writeOutput(const std::vector<ConsistencyError>& errors,
                  const std::string& tag_name,
                  const std::string& path)
 {
-    std::string complete_path = "missing_" + tag_name + "_" + path;
+    std::string complete_path = "inconsistent_" + tag_name + "." + path;
     std::cout << "Writing " << complete_path << " .... " << std::flush;
     std::ofstream output(complete_path);
 
